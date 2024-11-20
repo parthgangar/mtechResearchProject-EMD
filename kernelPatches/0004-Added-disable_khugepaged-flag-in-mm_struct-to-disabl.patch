@@ -1,0 +1,43 @@
+From f937648f2058bd22b0f56efe57a94e6caaade6d6 Mon Sep 17 00:00:00 2001
+From: gkgabel <gkgabel@gmail.com>
+Date: Sun, 26 May 2024 15:50:31 +0530
+Subject: [PATCH 4/4] Added disable_khugepaged flag in mm_struct to disable the
+ scan for a specific process
+
+---
+ include/linux/mm_types.h | 1 +
+ mm/huge_memory.c         | 3 +++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/include/linux/mm_types.h b/include/linux/mm_types.h
+index 3d6baa7..b1361e5 100644
+--- a/include/linux/mm_types.h
++++ b/include/linux/mm_types.h
+@@ -389,6 +389,7 @@ struct mm_struct {
+ #endif
+ 	int map_count;				/* number of VMAs */
+ 
++	bool disable_khugepaged;
+ 	spinlock_t page_table_lock;		/* Protects page tables and some counters */
+ 	struct rw_semaphore mmap_sem;
+ 
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 4a38b04..f45bef0 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -2772,9 +2772,12 @@ static unsigned int khugepaged_scan_mm_slot(unsigned int pages,
+ 	spin_unlock(&khugepaged_mm_lock);
+ 
+ 	mm = mm_slot->mm;
++	printk(KERN_INFO "khugepaged: scanning %d\n", mm->disable_khugepaged);
+ 	down_read(&mm->mmap_sem);
+ 	if (unlikely(khugepaged_test_exit(mm)))
+ 		vma = NULL;
++	else if (mm->disable_khugepaged == 1)
++		vma = NULL;
+ 	else
+ 		vma = find_vma(mm, khugepaged_scan.address);
+ 
+-- 
+2.7.4
+

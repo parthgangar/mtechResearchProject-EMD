@@ -1,0 +1,72 @@
+From a163633fe3c197b37da66db764b340edc2f0f465 Mon Sep 17 00:00:00 2001
+From: gkgabel <gkgabel@gmail.com>
+Date: Tue, 21 May 2024 15:26:07 +0530
+Subject: [PATCH 3/4] Export symbols and follow_page_custom for bloat recovery
+ module
+
+---
+ mm/huge_memory.c | 8 ++++++++
+ mm/memory.c      | 1 +
+ mm/mmzone.c      | 3 +++
+ 3 files changed, 12 insertions(+)
+
+diff --git a/mm/huge_memory.c b/mm/huge_memory.c
+index 3a08184..4a38b04 100644
+--- a/mm/huge_memory.c
++++ b/mm/huge_memory.c
+@@ -3093,3 +3093,11 @@ void vma_adjust_trans_huge(struct vm_area_struct *vma,
+ 			split_huge_page_address(next->vm_mm, nstart);
+ 	}
+ }
++
++
++struct page *follow_page_custom(struct vm_area_struct *vma,
++                unsigned long addr, unsigned int foll_flags)
++{
++	return follow_page(vma, addr, foll_flags);
++}
++EXPORT_SYMBOL(follow_page_custom);
+\ No newline at end of file
+diff --git a/mm/memory.c b/mm/memory.c
+index deb679c..8310799 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -1367,6 +1367,7 @@ void zap_page_range(struct vm_area_struct *vma, unsigned long start,
+ 	mmu_notifier_invalidate_range_end(mm, start, end);
+ 	tlb_finish_mmu(&tlb, start, end);
+ }
++EXPORT_SYMBOL(zap_page_range);
+ 
+ /**
+  * zap_page_range_single - remove user pages in a given range
+diff --git a/mm/mmzone.c b/mm/mmzone.c
+index 7d87ebb..a37ec10 100644
+--- a/mm/mmzone.c
++++ b/mm/mmzone.c
+@@ -13,6 +13,7 @@ struct pglist_data *first_online_pgdat(void)
+ {
+ 	return NODE_DATA(first_online_node);
+ }
++EXPORT_SYMBOL(first_online_pgdat);
+ 
+ struct pglist_data *next_online_pgdat(struct pglist_data *pgdat)
+ {
+@@ -22,6 +23,7 @@ struct pglist_data *next_online_pgdat(struct pglist_data *pgdat)
+ 		return NULL;
+ 	return NODE_DATA(nid);
+ }
++EXPORT_SYMBOL(next_online_pgdat);
+ 
+ /*
+  * next_zone - helper magic for for_each_zone()
+@@ -41,6 +43,7 @@ struct zone *next_zone(struct zone *zone)
+ 	}
+ 	return zone;
+ }
++EXPORT_SYMBOL(next_zone);
+ 
+ static inline int zref_in_nodemask(struct zoneref *zref, nodemask_t *nodes)
+ {
+-- 
+2.7.4
+
