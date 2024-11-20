@@ -11,6 +11,7 @@
 
 #define BUFF_LEN	1024
 #define NUM_INSTANCES 4
+#define NUM_LOCAL_HP_RECOVERED 1000
 
 struct tty_struct *out = NULL;
 char *buff;
@@ -34,7 +35,9 @@ unsigned long nr_hugepages_broken[NUM_INSTANCES] = {0};
 int process_bucket[NUM_INSTANCES][11] = {0};
 
 int priority_value=100;
-
+struct vm_area_struct *current_vma[NUM_INSTANCES];
+bool is_vma_dead[NUM_INSTANCES];
+int count_vma_dead = 0;
 
 /* declaration for kernel functions exported manually */
 struct page *follow_page_custom(struct vm_area_struct *vma,
@@ -139,6 +142,7 @@ static bool remove_bloat(struct task_struct *task, int process_itr)
     struct mm_struct *mm = NULL;
     struct page *page;
     unsigned long start, end, addr;
+    unsigned long nr_local_hp_recovered = 0;
 
     mm = get_task_mm(task);
     if (!mm)
@@ -149,7 +153,7 @@ static bool remove_bloat(struct task_struct *task, int process_itr)
         int threshold = (priority_value * 512)/100;
         int buck_index = priority_value / 10;
         // printk(KERN_INFO"Threshold: %d\n", threshold);
-        for (vma = mm->mmap; vma; vma = vma->vm_next)
+        for (vma = current_vma[process_itr]; vma; vma = vma->vm_next)
         {
             start = (vma->vm_start + ~HPAGE_PMD_MASK) & HPAGE_PMD_MASK;
             end = vma->vm_end & HPAGE_PMD_MASK;
@@ -175,15 +179,21 @@ static bool remove_bloat(struct task_struct *task, int process_itr)
                 }
                 remove_zero_pages(page, vma, addr);
                 nr_hugepages_broken[process_itr] += 1;
+                nr_local_hp_recovered += 1;
                 process_bucket[process_itr][buck_index] += 1;
                 nr_recovered += nr_zero;
                 put_page(page);
                 addr += PAGE_SIZE * 512;
-                if (nr_recovered > nr_to_free){
+                if(nr_local_hp_recovered > NUM_LOCAL_HP_RECOVERED || nr_recovered > nr_to_free){
+                    trace_printk("Local HP recovered: %ld for process %d\n", nr_local_hp_recovered,process_itr);
+                    current_vma[process_itr] = vma;
                     goto inner_break;
                 } 
             }
         }
+        //vma end is reached
+        is_vma_dead[process_itr] = true;
+        count_vma_dead += 1;
     
 inner_break:
     
@@ -196,6 +206,25 @@ out:
     snprintf(buff, BUFF_LEN, "Unable to locate task mm for pid: %d", task->pid);
     write_output();
     return  false;
+}
+
+static bool initialize_func(struct task_struct *task, int process_itr)
+{
+    struct vm_area_struct *vma = NULL;
+    struct mm_struct *mm = NULL;
+
+    mm = get_task_mm(task);
+    if (!mm)
+        goto out;
+
+    current_vma[process_itr] = mm->mmap;
+    mmput(mm);
+    is_vma_dead[process_itr] = false;
+    return true;
+
+out:
+    trace_printk("Error in initializing VMA for process %d", process_itr);
+    return false;
 }
 
 static int check_process_bloat(void)
@@ -221,28 +250,63 @@ static int check_process_bloat(void)
     int pid_list[NUM_INSTANCES] = {pid, pid1, pid2, pid3};
 
     while (nr_recovered < nr_to_free){
-    for(process_itr = 0; process_itr < NUM_INSTANCES ; process_itr++)
-    {
-        if(pid_list[process_itr] == 0){
-            trace_printk("Process %d not found\n, moving on to next one", process_itr);
-            continue;
-        }
-        pid_struct = find_get_pid(pid_list[process_itr]);
-        if (!pid_struct)
-            goto out;
 
-        task = pid_task(pid_struct, PIDTYPE_PID);
-        if (!task)
-            goto out;
+        trace_printk("Running for priority value: %d\n", priority_value);
+        trace_printk("nr_recovered: %ld, nr_to_free: %ld\n", nr_recovered, nr_to_free); 
+        for(process_itr = 0; process_itr < NUM_INSTANCES ; process_itr++)
+        {
+            if(pid_list[process_itr] == 0){
+                trace_printk("Process %d not found\n, moving on to next process's starting vma", process_itr);
+                continue;
+            }
+            pid_struct = find_get_pid(pid_list[process_itr]);
+            if (!pid_struct)
+                goto out;
 
-        /* Calculate bloat. */
-        remove_bloat(task, process_itr);
-        if(nr_recovered > nr_to_free)
-            goto out;
+            task = pid_task(pid_struct, PIDTYPE_PID);
+            if (!task)
+                goto out;
 
-    }
-    priority_value = priority_value - 10;
-    }
+            if(!initialize_func(task, process_itr))
+                goto out;
+            
+            trace_printk("Process %d VMA and flag initialized\n", process_itr);
+        } // end of for loop
+        trace_printk("VMA and flag initialized for all processes, onto debloating\n");
+        trace_printk("Resetting count_vma_dead\n");
+        count_vma_dead = 0;
+        trace_printk("count_vma_dead: %d\n", count_vma_dead);
+
+        while(count_vma_dead != NUM_INSTANCES)
+        {
+            for(process_itr = 0; process_itr < NUM_INSTANCES ; process_itr++)
+            {
+                if(pid_list[process_itr] == 0){
+                    trace_printk("Process %d not found\n, moving on to next one", process_itr);
+                    continue;
+                }
+                pid_struct = find_get_pid(pid_list[process_itr]);
+                if (!pid_struct)
+                    goto out;
+
+                task = pid_task(pid_struct, PIDTYPE_PID);
+                if (!task)
+                    goto out;
+                
+                if(is_vma_dead[process_itr])
+                    continue;
+
+                /* Calculate bloat. */
+                remove_bloat(task, process_itr);
+                trace_printk("Process %d debloated, nr_recovered: %ld\n", process_itr, nr_recovered);
+                if(nr_recovered > nr_to_free)
+                    goto out;
+
+            } // end of for loop
+        } // end of while loop
+        trace_printk("All vmas dead for all processes, so decrementing priority value\n");
+        priority_value -= 10;
+    } // end of main while loop
     
     print_bloat_info(nr_to_free, nr_recovered);
     write_output();
